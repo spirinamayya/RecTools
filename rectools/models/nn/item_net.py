@@ -61,18 +61,23 @@ class CatFeaturesItemNet(ItemNetBase):
 
     def __init__(
         self,
-        item_features: SparseFeatures,
+        item_features: torch.Tensor,
+        item_feature_length: torch.Tensor,
+        n_cat_features: int,
         n_factors: int,
         dropout_rate: float,
     ):
         super().__init__()
 
         self.item_features = item_features
-        self.n_items = len(item_features)
-        self.n_cat_features = len(item_features.names)
+        self.n_items = len(item_feature_length)
+        self.item_feature_length = item_feature_length
 
-        self.category_embeddings = nn.Embedding(num_embeddings=self.n_cat_features, embedding_dim=n_factors)
-        self.drop_layer = nn.Dropout(dropout_rate)
+        self.embedding_bag  = nn.EmbeddingBag(num_embeddings=n_cat_features, embedding_dim=n_factors)
+        
+
+        # self.category_embeddings = nn.Embedding(num_embeddings=self.n_cat_features, embedding_dim=n_factors)
+        # self.drop_layer = nn.Dropout(dropout_rate)
 
     def forward(self, items: torch.Tensor) -> torch.Tensor:
         """
@@ -88,13 +93,20 @@ class CatFeaturesItemNet(ItemNetBase):
         torch.Tensor
             Item embeddings.
         """
+        
         # TODO: Should we use torch.nn.EmbeddingBag?
-        feature_dense = self.get_dense_item_features(items)
+        # feature_dense = self.get_dense_item_features(items)
 
-        feature_embs = self.category_embeddings(self.feature_catalog.to(self.device))
-        feature_embs = self.drop_layer(feature_embs)
+        # feature_embs = self.category_embeddings(self.feature_catalog.to(self.device))
+        # feature_embs = self.drop_layer(feature_embs)
 
-        feature_embeddings_per_items = feature_dense.to(self.device) @ feature_embs
+        # feature_embeddings_per_items = feature_dense.to(self.device) @ feature_embs
+
+        item_features = self.item_features[items]
+        item_cat_features = torch.nonzero(item_features, as_tuple=True)[1].to(self.device)
+        item_feature_length = torch.sum(item_features, dim=1, dtype=torch.int64) # number of features each item has
+        offsets = torch.cumsum(item_feature_length, dim=0).to(self.device)
+        feature_embeddings_per_items = self.embedding_bag(input=item_cat_features, offsets=offsets)
         return feature_embeddings_per_items
 
     @property
@@ -102,22 +114,22 @@ class CatFeaturesItemNet(ItemNetBase):
         """Return tensor with elements in range [0, n_cat_features)."""
         return torch.arange(0, self.n_cat_features)
 
-    def get_dense_item_features(self, items: torch.Tensor) -> torch.Tensor:
-        """
-        Get categorical item values by certain item ids in dense format.
+    # def get_dense_item_features(self, items: torch.Tensor) -> torch.Tensor:
+    #     """
+    #     Get categorical item values by certain item ids in dense format.
 
-        Parameters
-        ----------
-        items : torch.Tensor
-            Internal item ids.
+    #     Parameters
+    #     ----------
+    #     items : torch.Tensor
+    #         Internal item ids.
 
-        Returns
-        -------
-        torch.Tensor
-            categorical item values in dense format.
-        """
-        feature_dense = self.item_features.take(items.detach().cpu().numpy()).get_dense()
-        return torch.from_numpy(feature_dense)
+    #     Returns
+    #     -------
+    #     torch.Tensor
+    #         categorical item values in dense format.
+    #     """
+    #     feature_dense = self.item_features.take(items.detach().cpu().numpy()).get_dense()
+    #     return torch.from_numpy(feature_dense)
 
     @classmethod
     def from_dataset(cls, dataset: Dataset, n_factors: int, dropout_rate: float) -> tp.Optional[tpe.Self]:
@@ -156,8 +168,13 @@ class CatFeaturesItemNet(ItemNetBase):
             """
             warnings.warn(explanation)
             return None
+        
+        dense_item_features = torch.tensor(item_cat_features.get_dense())
+        item_cat_features = torch.nonzero(dense_item_features, as_tuple=True)[1] 
+        item_feature_length = torch.sum(dense_item_features, dim=1) # number of features each item has
+        n_cat_features = len(item_cat_features.names)
 
-        return cls(item_cat_features, n_factors, dropout_rate)
+        return cls(dense_item_features, item_feature_length, n_cat_features, n_factors, dropout_rate)
 
 
 class IdEmbeddingsItemNet(ItemNetBase):
